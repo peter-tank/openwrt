@@ -1,0 +1,419 @@
+#=================================================
+
+# Description: Build OpenWrt using GitHub Actions
+
+# Lisence: MIT
+
+# Author: P3TERX
+
+# Blog: https://p3terx.com
+
+#=================================================
+
+name: Build OpenWrt For Large Nand
+
+on:
+  release:
+    types:
+      - created
+
+jobs:
+  wndr3700:
+    runs-on: ubuntu-18.04
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@master
+      with:
+        ref: v19.07.0_netgear_wndr
+        fetch-depth: 0
+        lfs: true
+
+    - name: Branch make sure
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        git checkout v19.07.0_netgear_wndr
+
+    - name: Hash cache path
+      id: cache_hash
+      env:
+        DIY_SH: 'diy.sh'
+        BASE_FILE: cache_compile.pkg
+        dl: 'dl'
+        build_dir: 'build_dir'
+        sdk_host: 'staging_dir/host'
+        sdk_hostpkg: 'staging_dir/hostpkg'
+        sdk_target: 'staging_dir/target-mips_24kc_musl'
+        sdk_env: '../openwrt'
+      run: |
+        chmod +x $DIY_SH
+        echo "::set-output name=dl::$(./$DIY_SH cache_key $BASE_FILE $dl)"
+        echo "::set-output name=build_dir::$(./$DIY_SH cache_key $BASE_FILE $build_dir)"
+        echo "::set-output name=sdk_host::$(./$DIY_SH cache_key $BASE_FILE $sdk_host)"
+        echo "::set-output name=sdk_hostpkg::$(./$DIY_SH cache_key $BASE_FILE $sdk_hostpkg)"
+        echo "::set-output name=sdk_target::$(./$DIY_SH cache_key $BASE_FILE $sdk_target)"
+        echo "::set-output name=sdk_env::$(./$DIY_SH cache_key $BASE_FILE $sdk_env)"
+
+    - name: Openwrt dl keys set
+      uses: actions/cache@v1.0.3
+      id: dl
+      with:
+        path: ../dl
+        key: ${{ runner.os }}-openwrt-sdk-dl-${{ steps.cache_hash.outputs.dl }}
+
+    - name: Openwrt sdk_build keys set
+      uses: actions/cache@v1.0.3
+      id: sdk_build
+      with:
+        path: ../build_dir
+        key: ${{ runner.os }}-openwrt-sdk-build-${{ steps.cache_hash.outputs.build_dir }}
+
+    - name: Openwrt sdk_host keys set
+      uses: actions/cache@v1.0.3
+      id: sdk_host
+      with:
+        path: ../host
+        key: ${{ runner.os }}-openwrt-sdk-host-${{ steps.cache_hash.outputs.sdk_host }}
+
+    - name: Openwrt sdk_hostpkg keys set
+      uses: actions/cache@v1.0.3
+      id: sdk_hostpkg
+      with:
+        path: ../hostpkg
+        key: ${{ runner.os }}-openwrt-sdk-hostpkg-${{ steps.cache_hash.outputs.sdk_hostpkg }}
+
+    - name: Openwrt sdk_target keys set
+      uses: actions/cache@v1.0.3
+      id: sdk_target
+      with:
+        path: ../target-mips_24kc_musl
+        key: ${{ runner.os }}-openwrt-sdk-target-${{ steps.cache_hash.outputs.sdk_target }}
+
+    - name: Download cached dl_large
+      if: steps.dl.outputs.cache-hit
+      env:
+        DEBIAN_FRONTEND: noninteractive
+        DIY_SH: 'diy.sh'
+        ACTION_TOKEN: ${{ secrets.ACTION_TOKEN }}
+        artifacts: '1084471'
+        base: 'https://api.github.com/repos/peter-tank/openwrt'
+        dst: '../dl_large'
+      run: |
+        curl -s -L --header 'authorization: Bearer ${{ secrets.GITHUB_TOKEN }}' -o dl_large.zip.o --url "${base}/actions/artifacts/${artifacts}/zip"
+        unzip -l dl_large.zip.o
+        unzip -o dl_large.zip.o -d ../
+        rm -vrf dl_large.zip.o
+
+    - name: Initialization environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        docker rmi `docker images -q`
+        shopt -os noglob
+        echo "Deleting files, please wait ..."
+        sudo rm -rf \
+          /usr/share/dotnet \
+          /etc/apt/sources.list.d/* \
+          /etc/mysql \
+          /etc/php
+        sudo -E apt-get -y purge \
+          azure-cli \
+          ghc* \
+          zulu* \
+          hhvm \
+          llvm* \
+          firefox \
+          google* \
+          dotnet* \
+          powershell \
+          openjdk* \
+          mysql* \
+          php*
+        sudo -E apt-get update
+        sudo -E apt-get -y install build-essential asciidoc binutils bzip2 gawk gettext git libncurses5-dev libz-dev patch unzip zlib1g-dev lib32gcc1 libc6-dev-i386 subversion flex uglifyjs git-core gcc-multilib p7zip p7zip-full msmtp libssl-dev texinfo libglib2.0-dev xmlto qemu-utils upx libelf-dev autoconf automake libtool autopoint device-tree-compiler
+        sudo -E apt-get -y autoremove --purge
+        sudo -E apt-get clean
+        sudo -E ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime
+
+    - name: Set up Go 1.16
+      uses: actions/setup-go@v1
+      with:
+        go-version: 1.16
+
+    - name: Clone custom packages
+      env:
+        DIY_SH: 'diy.sh'
+        target: custom/openwrt-packages
+      run: |
+        go version
+        chmod +x $DIY_SH
+        ./$DIY_SH custom_clones $target
+
+    - name: Feeds Update/Install
+      env:
+        REPO_URL: https://github.com/peter-tank/openwrt-package.git
+        REPO_COMMIT: ff7ededf99f29c4dd80d932a03a9cac0eb0f5698
+        target: custom/openwrt-packages
+      run: |
+        sed -ie "/^src-git lienol /d" feeds.conf.default
+        echo "src-git lienol $REPO_URL^$REPO_COMMIT" >> feeds.conf.default
+        ./scripts/feeds list -s
+        ./scripts/feeds update -a
+        ./scripts/feeds list -r "lienol"
+        ./scripts/feeds install -f -d m -a
+        ./scripts/feeds install -f -d m -p "lienol"
+
+    - name: Feeds package list
+      env:
+        target: 'feeds'
+        package: 'package'
+        dst: 'feed_packages.buildinfo'
+        DIY_SH: 'diy.sh'
+      run: |
+        ./$DIY_SH append_pkglist $target $dst
+        ./$DIY_SH append_pkglist $package $dst
+        wc -l ${dst}
+
+    - name: Customed package list
+      env:
+        target: 'custom/openwrt-packages'
+        dst: 'cust_packages.buildinfo'
+        DIY_SH: 'diy.sh'
+      run: |
+        ./$DIY_SH append_pkglist $target $dst
+        wc -l ${dst}
+
+    - name: Check customed packages to feeds
+      env:
+        lsrc: 'cust_packages.buildinfo'
+        ldst: 'feed_packages.buildinfo'
+        dst: 'feeds'
+        package: 'package'
+        target: 'package/openwrt-packages'
+        ltarget: 'openwrt_packages.buildinfo'
+        DIY_SH: 'diy.sh'
+      run: |
+        ./$DIY_SH pkg_update $lsrc $ldst $target $ltarget
+        echo "# new packages $target:"
+        ls -lha $target
+        echo "# update list $ldst:"
+        rm -vf ${ldst}
+        ./$DIY_SH append_pkglist $dst $ldst
+        ./$DIY_SH append_pkglist $target $ldst
+        ./$DIY_SH append_pkglist $package $ldst
+        wc -l ${ldst}
+
+    - name: Patching packages after update
+      env:
+        DIY_SH: 'diy.sh'
+        ldst: 'feed_packages.buildinfo'
+      run: |
+        ./$DIY_SH patch_fetched 19.07.0 ar71xx.WNDR3700V4 '' '' $ldst
+        ./scripts/feeds update -a -i
+        ./scripts/feeds install -f -d m -a
+        ./scripts/feeds install -f -d m -p "lienol"
+
+#    - name: SSH connection to Actions
+#      uses: peter-tank/debugger-action@master
+
+    - name: Load WNDR3700V4 configuration
+      env:
+        CONFIG_FILE: '.config'
+        DIY_SH: 'diy.sh'
+      run: |
+        ./$DIY_SH custom_configure 19.07.0 ar71xx.WNDR3700V4 $CONFIG_FILE
+        make defconfig
+        ./scripts/diffconfig.sh
+
+    - name : Reuse cached
+      env:
+        DIY_SH: 'diy.sh'
+        dl: 'dl'
+        dl_large: '../dl_large'
+        build_dir: 'build_dir'
+        sdk_host: 'staging_dir/host'
+        sdk_hostpkg: 'staging_dir/hostpkg'
+        sdk_target: 'staging_dir/target-mips_24kc_musl'
+        sdk_env: '../openwrt'
+      run: |
+        cat  .config
+        du -Phsc */ | grep -e "[0-9]M"$'\x09'
+        ./$DIY_SH cache_build $dl
+        [ ! -L $sdk_host ] || rm -vf $sdk_host
+        [ ! -L $sdk_target ] || rm -vf $sdk_target
+        export TMPDIR=`dirname $(mktemp -u)`
+        echo "# Link to tmp: $TMPDIR"
+        ln -vnsfT $(readlink -f $dl) $TMPDIR/$dl
+        mkdir -p ../0M && touch ../0M/0M
+        [ ! -d $dl_large ] || mv -vft $dl $dl_large/* ../*M/*
+        du -L -Phsc $dl/
+
+    - name: Make download
+      run: |
+        make download -j$(nproc) V=s
+        find -L dl/ -size -1024c -ls
+        find -L dl/ -size -1024c -exec rm -f {} \;
+        du -L -Phsc dl/* | grep -e "[0-9]M"$'\x09' | sort -h
+
+    - name: Build WNDR3700V4
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        echo -e "$(nproc) thread build."
+        make -j$(nproc) V=s
+
+    - name: Clean/Move/Copy targets wndr3700v4
+      env:
+        DIY_SH: 'diy.sh'
+        firmware: 'bin_wndr3700v4'
+        src: 'bin/targets/ar71xx/nand'
+        patch: 'bin_patch/ar71xx_WNDR3700V4'
+        kernel: ''
+        cmi: 'bin_common_img'
+        sdk: 'bin_sdk'
+        imb: 'bin_imagebuilder'
+      run: |
+        echo "# Moving wndr3700v4 firmware"
+        ./$DIY_SH move_files $src "openwrt-*wndr*" $firmware
+        echo "# Build patch helper"
+        ./$DIY_SH patch_fetched 19.07.0 ar71xx.WNDR3700V4 $patch $kernel
+        echo "# Moving imagebuilder"
+        ./$DIY_SH move_files $src '*openwrt-imagebuilder*' $imb
+        echo "# Moving SDK"
+        ./$DIY_SH move_files $src 'openwrt-sdk-*.tar.xz' $sdk
+        echo "# Clean kernel-debug"
+        ./$DIY_SH clean_files $src 'kernel-debug.tar.*'
+        echo "# Moving common images"
+        ./$DIY_SH move_files $src 'openwrt-*-*-*.*' $cmi
+        echo "# Copying build info"
+        ./$DIY_SH cpbuild_info $src "*.buildinfo sha256sums" $firmware $patch $sdk $imb $cmi
+
+    - name: Moving packages
+      env:
+        DIY_SH: 'diy.sh'
+        scust: 'bin/'
+        sbase: 'bin/packages/mips_24kc/base'
+        smpk: 'bin/packages/mips_24kc/packages'
+        snpkg: 'bin/targets/ar71xx/nand/packages'
+        skmods: 'bin/targets/ar71xx/nand'
+        cust: 'bin_customed'
+        base: 'bin_mips_24kc_base'
+        mpk: 'bin_mips_24kc_packages'
+        npkg: 'bin_nand_pkg'
+        kmods: 'bin_nand_kmods'
+        cipks: 'kernel libgcc* libcurl* ca-bundle* libmbedtls* curl ca-certificates* libustream-openssl* openssl-util* zlib libpthread librt libpcre wget libncurses* libreadline* gawk terminfo* bash htop nano tcping coreutils coreutils-base64 coreutils-nohup unzip tcping vim-fuller tree diffutils fullconenat ipt-fullconenat iptables-mod-fullconenat firewall libnettle* libnetfilter-conntrack* libnfnetlink* libgmp* libcap* dnsmasq-full* ip-full* firewall kmod-nf-flow kmod-ipt-offload wireguard kmod-wireguard kmod-gre kmod-mppe kmod-ppp kmod-pppoe kmod-slhc kmod-lib-crc-ccitt kmod-lib-crc-ccitt kmod-nf-ipt kmod-nf-nat iptables-mod-tproxy kmod-ipt-tproxy iptables-mod-ipopt kmod-ipt-core kmod-ipt-ipopt kmod-ipt-ipset kmod-ipt-ipsec iptables-mod-fullconenat ipt-fullconenat kmod-tcp-bbr kmod-wireguard kmod-udptunne4 kmod-udptunne6 kmod-tun kmod-nf-reject kmod-ipt-raw kmod-lib-textsearch kmod-nf-conntrack* kmod-nf-nathelper kmod-nf-nathelper-extra luci-i18n-base-zh-cn zoneinfo-asia libopenssl libustream-openssl* dns2socks dns2tcp ipt2socks redsocks2 microsocks xray-core libopenssl1.1 libstdcpp* boost boost-date_time boost-program_options boost-system trojan v2ray pdnsd-alt chinadns-ng libev libcares libsodium shadowsocks-libev shadowsocks-libev-server libopenssl shadowsocksr-libev v2ray-plugin shadowsocksr-libev-alt shadowsocksr-libev-server shadowsocksr-libev-ssr-local resolveip ip ipset luci-compat luci-lib-ipkg luci-app-passwall nginx php7 php7-fpm php7-mod-curl php7-mod-gd php7-mod-iconv php7-mod-json php7-mod-mbstring php7-mod-opcache php7-mod-session php7-mod-zip luci-app-kodexplorer rpcd-mod-iwinfo jshn jsonfilter iwinfo libiwinfo resolveip luci-app-autorepeater minisign luci-app-dnscrypt-proxy2 redsocks ip-full luci-app-passwall luci-app-ssr-plus luci-app-clash luci-app-fullconenat luci-app-flowoffload libwebsockets-full libuv* ttyd luci-app-ttyd luci-theme-material luci-theme-openwrt luci-theme-bootstrap-mod luci-theme-netgear-mc luci-theme-argon-mod luci-theme-darkmatter luci-app-ramfree luci_app-control-timewol luci-app-control-mia luci-app-verysync verysync vlmcsd luci-app-vlmcsd frpc frps luci-app-frpc haproxy kcptun-client brook'
+      run: |
+        echo "# Moving customed packages"
+        ./$DIY_SH move_files $scust "$cipks" $cust
+        echo "# Moving mips base"
+        ./$DIY_SH move_dir $sbase $base
+        echo "# Moving mips packages"
+        ./$DIY_SH move_dir $smpk $mpk
+        echo "# Moving nand kmods"
+        ./$DIY_SH move_files $skmods "kmod-*" $kmods
+        echo "# Moving nand packages"
+        ./$DIY_SH move_dir $snpkg $npkg
+
+    - name : Upload Netgear wndr3700v4
+      uses: actions/upload-artifact@master
+      with:
+        name: firmware_wndr3700v4_128M
+        path: bin_wndr3700v4
+
+    - name : Upload imagebuilder
+      uses: actions/upload-artifact@master
+      with:
+        name: Openwrt imagebuilder
+        path: bin_imagebuilder
+
+    - name : Upload SDK
+      uses: actions/upload-artifact@master
+      with:
+        name: Openwrt SDK
+        path: bin_sdk
+
+    - name : Upload ar71xx nand images
+      uses: actions/upload-artifact@master
+      with:
+        name: targets_ar71xx_nand
+        path: bin_common_img
+
+    - name : Upload patch helper
+      uses: actions/upload-artifact@master
+      with:
+        name: patch_helper
+        path: bin_patch
+
+    - name : Upload customed
+      uses: actions/upload-artifact@master
+      with:
+        name: customed_packages
+        path: bin_customed
+
+    - name : Upload mips base
+      uses: actions/upload-artifact@master
+      with:
+        name: mips_24kc_base
+        path: bin_mips_24kc_base
+
+    - name : Upload mips packages
+      uses: actions/upload-artifact@master
+      with:
+        name: mips_24kc_packages
+        path: bin_mips_24kc_packages
+
+    - name : Upload mips feeds
+      uses: actions/upload-artifact@master
+      with:
+        name: mips_24kc_feeds
+        path: bin/packages
+
+    - name : Upload ar71xx kmods
+      uses: actions/upload-artifact@master
+      with:
+        name: targets_ar71xx_nand_kmods
+        path: bin_nand_kmods
+
+    - name : Upload ar71xx nand packages
+      uses: actions/upload-artifact@master
+      with:
+        name: targets_ar71xx_nand_packages
+        path: bin_nand_pkg
+
+    - name : Upload ar71xx packages
+      uses: actions/upload-artifact@master
+      with:
+        name: targets_ar71xx
+        path: bin/targets
+
+    - name : Clean/Move SDK env
+      env:
+        DIY_SH: 'diy.sh'
+        dl: 'dl'
+        build_dir: 'build_dir'
+        sdk_host: 'staging_dir/host'
+        sdk_hostpkg: 'staging_dir/hostpkg'
+        sdk_target: 'staging_dir/target-mips_24kc_musl'
+        sdk_env: '../openwrt'
+      run: |
+        rm -rf openwrt* bin* feeds/*.tmp feeds/*/.git build_dir/*/{linux-*,openwrt-imagbuilder*,openwrt-sdk*} staging_dir/host staging_dir/toolchain-* package/{feeds,openwrt-packages} custom* tmp logs
+        du -Phsc */ | grep -e "[0-9]M"$'\x09'
+        ./$DIY_SH cache_build $dl $sdk_host $sdk_hostpkg
+        du -Phsc */* | grep -e "[0-9]M"$'\x09'
+
+    - name : Clean/Move env for cache
+      env:
+        DIY_SH: 'diy.sh'
+        dl: 'dl'
+        dl_large: '../dl_large'
+        llarge: '[Ll]inux gcc uboot u-boot busybox binutils bash boost otp valgrind gmp gdb domoticz classpath clamav cryptsetup db- asterisk freeswitch netifyd nss opencv mariadb Pillow softether'
+      run: |
+        make clean
+        rm -rf *.buildinfo build_dir .git
+        echo "# Moving large files downloaded"
+        ./$DIY_SH move_files $dl "$llarge" $dl_large '*'
+        rm -rf ./$DIY_SH
+        echo "# Shink downloads for caching"
+        find -L $dl/ -type f -size -19M -exec rm -vf {} \;
+        du -L -Phsc * $dl/* | grep -e "[0-9]M"$'\x09'
